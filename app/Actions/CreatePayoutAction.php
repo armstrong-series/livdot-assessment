@@ -35,6 +35,7 @@ class CreatePayoutAction
                 ->where('entry_type', LedgerEntryType::REFUND_RESERVE->value)
                 ->sum('amount_kobo');
 
+
             $amount = $sales - $refunds;
 
 

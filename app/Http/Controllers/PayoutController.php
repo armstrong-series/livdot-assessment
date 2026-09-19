@@ -11,7 +11,10 @@ class PayoutController extends Controller
 
     public function preparePayout(LiveEvent $event)
     {
-        abort_unless($event->host_id === request()->user()->id || request()->user()->isAdmin(), 403);
+        abort_unless(
+            $event->host_id === request()->user()->id || request()->user()->isAdmin(),
+            403
+        );
 
         return livdotResponse($this->payoutService->prepareHostPayout($event), 201, 'payouts');
     }
