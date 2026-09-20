@@ -35,6 +35,7 @@ Recommended development environment:
 -   Redis if queue/background processing is enabled
 -   Git
 -   Postman or another HTTP client
+-   Docker (optional)
 
 The application uses Laravel queues for asynchronous processing such as incident refund processing.
 
@@ -43,6 +44,16 @@ The application uses Laravel queues for asynchronous processing such as incident
 # 2. Installation
 
 Clone the repository and install the Composer dependencies.
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+## Local setup
+
+This is without docker build
 
 ```bash
 git clone <repository-url>
