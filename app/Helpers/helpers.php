@@ -4,6 +4,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Auth\Access\AuthorizationException;
 
 
 if (! function_exists('livdotResponse')) {
@@ -109,5 +110,23 @@ if (! function_exists('livdotResponse')) {
             'jsonapi' => ['version' => config('livdot.json_api.version')],
             'links' => ['self' => $selfLink ?? app('url')->current()],
         ], $statusCode, array_merge(['Content-Type' => 'application/vnd.api+json'], $headers));
+    }
+}
+
+
+if (! function_exists('authorizedRole')) {
+    function authorizedRole(string|array $roles, $user = null): void
+    {
+        $user = $user ?? auth()->user();
+
+        abort_unless($user, 401, 'Unauthenticated.');
+
+        if (in_array($user->role, (array) $roles, true)) {
+            return;
+        }
+
+        throw new AuthorizationException(
+            'Only ' . implode(', ', (array) $roles) . ' authorized action!'
+        );
     }
 }

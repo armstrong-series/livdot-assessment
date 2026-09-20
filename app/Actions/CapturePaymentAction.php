@@ -8,6 +8,7 @@ use App\Models\PaymentTransaction;
 use Illuminate\Support\Facades\DB;
 use App\Enums\TicketStatus;
 use App\Enums\LedgerEntryType;
+use App\Enums\PaymentStatus;
 
 class CapturePaymentAction
 {
@@ -19,7 +20,7 @@ class CapturePaymentAction
                 ->lockForUpdate()->firstOrFail();
 
 
-            if ($payment->status === 'captured') {
+            if ($payment->status === PaymentStatus::CAPTURED->value) {
                 return $payment;
             }
             abort_if(
@@ -29,7 +30,7 @@ class CapturePaymentAction
             );
             $payment->update(
                 [
-                    'status'            => 'captured',
+                    'status'            => PaymentStatus::CAPTURED->value,
                     'provider_event_id' => $providerEventId,
                     'captured_at'       => now()
                 ]

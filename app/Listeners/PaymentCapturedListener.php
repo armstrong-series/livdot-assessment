@@ -9,9 +9,15 @@ class PaymentCapturedListener implements ShouldQueue
 {
 
 
-    /**
-     * Handle the event.
-     */
+    public int $tries = 3;
+
+    public function backoff(): array
+    {
+        return [10, 30, 60];
+    }
+
+
+
     public function handle(PaymentCaptured $event): void
     {
         $payment = $event->payment;

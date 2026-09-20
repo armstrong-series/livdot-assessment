@@ -14,6 +14,8 @@ class EventController extends Controller
 
     public function hostEvent(StoreEventRequest $request)
     {
+        authorizedRole('host');
+
         return livdotResponse(
             $this->liveEventService->hostEvent(
                 $request->user(),
@@ -30,7 +32,16 @@ class EventController extends Controller
 
     public function beginBroadcast(LiveEvent $event)
     {
-        abort_unless($event->host_id === request()->user()->id, 403);
+
+        authorizedRole('host');
+
+        abort_unless(
+            $event->host_id === request()->user()->id,
+            403,
+            'Only the event host can start this event.'
+        );
+
+
 
         return livdotResponse(
             $this->liveEventService->beginBroadcast($event),
@@ -45,6 +56,9 @@ class EventController extends Controller
 
     public function finalizeBroadcast(LiveEvent $event)
     {
+
+        authorizedRole('host');
+
         abort_unless($event->host_id === request()->user()->id, 403);
 
         return livdotResponse(

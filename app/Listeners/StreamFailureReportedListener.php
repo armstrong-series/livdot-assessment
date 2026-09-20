@@ -5,22 +5,28 @@ namespace App\Listeners;
 use Illuminate\Contracts\Queue\ShouldQueue;
 
 use App\Events\StreamFailureReported;
+use App\Jobs\ProcessIncidentRefundsJob;
 
 class StreamFailureReportedListener implements ShouldQueue
 {
 
-    /**
-     * Handle the event.
-     */
+    public int $tries = 3;
+
+    public function backoff(): array
+    {
+        return [10, 30, 60];
+    }
+
+
     public function handle(StreamFailureReported $event): void
     {
         $incident = $event->incident;
         $incident->loadMissing('liveEvent');
-        // Handle post-incident side effects here.
-        // Examples: // - Notify the host that the stream failed.
-        // - Notify affected viewers that their access was revoked.
-        // - Dispatch refund processing jobs.
-        // - Notify the operations/admin team. 
-        // - Send monitoring/analytics events. if ($incident->automatic_refunds_eligible) { // Refund processing should be handled asynchronously. // // foreach ($incident->liveEvent->tickets as $ticket) { // ProcessRefundJob::dispatch($ticket); // } }
+
+        if ($incident->automatic_refunds_eligible) {
+            ProcessIncidentRefundsJob::dispatch(
+                $incident->id
+            );
+        }
     }
 }

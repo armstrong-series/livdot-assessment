@@ -3,7 +3,7 @@
 namespace App\Services;
 
 use App\Actions\CompleteLiveEventAction;
-use App\Actions\CreateLiveEventAction;
+use App\Actions\CreateLiveEventAction as HostLiveEventAction;
 use App\Actions\StartLiveEventAction;
 use App\Models\LiveEvent;
 use App\Models\User;
@@ -11,14 +11,14 @@ use App\Models\User;
 class LiveEventService
 {
     public function __construct(
-        private CreateLiveEventAction $createLiveEvent,
+        private HostLiveEventAction $hostLiveEventAction,
         private StartLiveEventAction $startLiveEvent,
         private CompleteLiveEventAction $completeLiveEvent
     ) {}
 
     public function hostEvent(User $host, array $attributes): LiveEvent
     {
-        return $this->createLiveEvent->execute($host, $attributes);
+        return $this->hostLiveEventAction->execute($host, $attributes);
     }
 
     public function beginBroadcast(LiveEvent $event): LiveEvent

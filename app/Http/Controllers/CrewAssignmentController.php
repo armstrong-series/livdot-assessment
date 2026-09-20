@@ -16,10 +16,8 @@ class CrewAssignmentController extends Controller
 
     public function assignCrew(StoreCrewAssignmentRequest $request, LiveEvent $event)
     {
-        abort_unless(
-            $event->host_id === $request->user()->id,
-            403
-        );
+
+        authorizedRole('host');
 
         return livdotResponse(
             $this->crewAssignmentService->assignProductionCrew(
@@ -33,18 +31,20 @@ class CrewAssignmentController extends Controller
 
     public function confirmAvailability(ConfirmCrewAvailabilityRequest $request, CrewAssignment $assignment)
     {
+        authorizedRole('host');
+
         $assignment = $this->crewAssignmentService->confirmCrewAvailability($assignment);
 
         if ($assignment === null) {
-            return response()->json([
-                'message' => 'Crew assignment already accepted.',
-                'status' => 'success',
-                'included' => [],
-                'meta' => [],
-                'jsonapi' => [
-                    'version' => '1.0',
-                ],
-            ], 200);
+            return livdotResponse(
+                null,
+                200,
+                'Crew assignment already accepted..',
+                false,
+                app('url')->current(),
+                [],
+                'crew-assignments'
+            );
         }
 
         return livdotResponse(

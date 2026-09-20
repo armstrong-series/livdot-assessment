@@ -12,10 +12,14 @@ class ConfirmCrewAvailabilityRequest extends FormRequest
     /**
      * Determine if the user is authorized to make this request.
      */
+
+
     public function authorize(): bool
     {
         $assignment = $this->route('assignment');
-        return $assignment instanceof CrewAssignment && $assignment->crew_member_id === $this->user()->id;
+
+        return $assignment instanceof CrewAssignment
+            && $assignment->liveEvent->host_id === $this->user()->id;
     }
 
 
