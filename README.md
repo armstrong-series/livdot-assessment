@@ -14,12 +14,13 @@ The platform supports:
 -   Live-stream state transitions
 -   Stream failure reporting
 -   Automatic refunds for early stream failures
+-   Queued and retryable refund processing
 -   Administrative review for failures occurring after the automatic-refund threshold
 -   Event completion
 -   Host payouts
 -   Financial ledger tracking
 
-The implementation is designed around transactional state changes, financial integrity, idempotency, and failure-safe processing.
+The implementation is designed around transactional state changes, financial integrity, idempotency, concurrency protection, and failure-safe asynchronous processing.
 
 ---
 
@@ -31,2626 +32,1963 @@ Recommended development environment:
 -   Laravel 13+
 -   Composer
 -   MySQL 8+
--   Redis (if queue/background processing is enabled)
+-   Redis if queue/background processing is enabled
 -   Git
 -   Postman or another HTTP client
 
-Check the installed versions:
-
-```bash
-php -v
-composer -V
-php artisan --version
-```
+The application uses Laravel queues for asynchronous processing such as incident refund processing.
 
 ---
 
 # 2. Installation
 
-Clone the repository:
+Clone the repository and install the Composer dependencies.
 
 ```bash
 git clone <repository-url>
-cd livdot
-```
-
-Install PHP dependencies:
-
-```bash
+cd liv-dot
 composer install
 ```
 
-Create the environment file:
+Create the environment file from the example environment file and configure the application and database connection.
 
 ```bash
 cp .env.example .env
 ```
 
-Generate the Laravel application key:
+Generate the Laravel application key.
 
 ```bash
-php artisan key:generate
+   php artisan key:generate
 ```
 
-Configure the database in `.env`:
+Configure the MySQL database and application URL in the environment configuration.
 
-```env
-DB_CONNECTION=mysql
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_DATABASE=livdot
-DB_USERNAME=root
-DB_PASSWORD=
-```
-
-Configure the application URL:
-
-```env
-APP_NAME="LIV DOT"
-APP_ENV=local
-APP_DEBUG=true
-APP_URL=http://localhost
-```
-
-Run migrations:
+Run the database migrations.
 
 ```bash
-php artisan migrate
+   php artisan migrate
 ```
 
-If seeders are available:
+Run Host Seeded information
 
 ```bash
-php artisan db:seed
+ php artisan db:seed
 ```
 
-Clear cached configuration during development when environment/configuration changes:
+During development, cached configuration should be cleared whenever environment or configuration values are changed.
 
-```bash
-php artisan optimize:clear
-```
+Start the Laravel application.
 
-Start the application:
+The API is normally available locally at:
 
-```bash
-php artisan serve
-```
-
-The API will normally be available at:
-
-```text
 http://127.0.0.1:8000
-```
 
 ---
 
-# 3. API Design
+# 3. Fresh Development Database
 
-The API follows **JSON:API 1.1** conventions.
+When testing the complete application from the beginning, the recommended development process is to reset the database and run all seeders.
 
-Requests containing resources use:
+The fresh database process creates the required database structure and default development users.
 
-```http
-Content-Type: application/vnd.api+json
-Accept: application/vnd.api+json
-```
+The default development host is created by the seeder with:
 
-Example request:
+-   Email: [host@livdot.io](mailto:host@livdot.io)
+-   Password: password
+-   Role: host
 
-```json
-{
-    "data": {
-        "type": "events",
-        "attributes": {
-            "title": "Lagos Tech Conference",
-            "ticket_price_kobo": 3500000,
-            "scheduled_duration_minutes": 120,
-            "scheduled_starts_at": "2026-10-15T18:00:00+01:00"
-        }
-    }
-}
-```
+Use these credentials to authenticate through the login endpoint and obtain the host JWT.
 
-Resource objects use:
+The default host can then be used to:
 
-```json
-{
-    "type": "events",
-    "id": "event-uuid",
-    "attributes": {
-        "title": "Lagos Tech Conference"
-    }
-}
-```
+-   Create events
+-   Assign production crew
+-   Start broadcasts for events owned by the host
+-   Complete broadcasts
+-   Perform other host-authorized operations
 
-Relationships use JSON:API resource linkage:
-
-```json
-{
-    "relationships": {
-        "host": {
-            "data": {
-                "type": "users",
-                "id": "user-uuid"
-            }
-        }
-    }
-}
-```
+A separate viewer and crew user should be available when testing the complete event lifecycle. If they are not included in the default seed data, they can be created through the signup endpoint.
 
 ---
 
-# 4. Base URL
+# 4. Queue Worker
+
+The refund workflow uses a queued Job.
+
+for local testing , run via terminal
+
+```bash
+php artisan queue:work
+```
+
+A queue worker must therefore be running when testing automatic refunds.
+
+The important asynchronous component is:
+
+ProcessIncidentRefundsJob
+
+The Job is responsible for executing incident refund processing asynchronously and providing retry behavior when a temporary failure occurs.
+
+The Job does not contain the refund business logic itself.
+
+The refund business logic belongs to:
+
+IssueIncidentRefundsAction
+
+The relationship is:
+
+ReportStreamFailureAction
+→ StreamFailureReported event
+→ StreamFailureReportedListener
+→ ProcessIncidentRefundsJob
+→ IssueIncidentRefundsAction
+
+The Job is configured to retry failed processing up to three times with increasing backoff intervals.
+
+---
+
+# 5. API Design
+
+The API follows JSON:API 1.1 conventions.
+
+JSON requests and responses use the JSON:API media type.
+
+Resource objects use a type, identifier, attributes, and relationships where applicable.
+
+The API uses a consistent response structure containing the application message, status, resource data, included resources where required, metadata, JSON:API version information, and the request URL.
+
+---
+
+# 6. Base URL
 
 The application currently does not use an `/api` prefix.
 
-For local development:
+For local development the base URL is normally:
 
-```text
 http://127.0.0.1:8000
-```
 
-Therefore:
+Therefore endpoints use paths such as:
 
-```text
 POST /auth/login
-```
 
 rather than:
 
-```text
 POST /api/auth/login
-```
 
 ---
 
-# 5. Authentication
+# 7. Authentication
 
 Protected endpoints use JWT authentication.
 
-The login endpoint returns an authentication token.
+After successful login, the returned JWT is supplied using the Authorization Bearer header.
 
-For protected endpoints:
-
-```http
-Authorization: Bearer <JWT_TOKEN>
-```
-
-Example:
-
-```http
-Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOi...
-```
-
-The following operations require authentication:
+The main authenticated operations are:
 
 -   Event creation
 -   Crew assignment
--   Crew acceptance
+-   Crew availability confirmation
 -   Starting a broadcast
 -   Completing a broadcast
 -   Ticket purchase
 -   Stream-failure reporting
 -   Payout creation
 
-The payment provider webhook is intentionally public and should authenticate the payment provider through webhook-signature verification in a production integration.
+The payment provider webhook is intentionally public because payment providers cannot normally authenticate using the application's JWT.
+
+In production, the payment webhook must verify the payment provider's webhook signature before processing the event.
 
 ---
 
-# 6. Common Headers
+# 8. User Roles
 
-For JSON:API requests:
+LIV DOT currently uses a simple user role model.
 
-```http
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
+The relevant roles are:
 
-For protected endpoints:
+-   Host
+-   Crew
+-   Viewer
 
-```http
-Authorization: Bearer <JWT_TOKEN>
-```
+Roles determine the general category of operation a user can perform.
 
-For idempotent operations such as ticket purchasing:
+Ownership checks are also required for event-specific operations.
 
-```http
-Idempotency-Key: <unique-operation-key>
-```
+For example, being a host does not mean that the host can operate every event. A host should only be able to control events belonging to that host.
+
+The application therefore uses both:
+
+-   Role authorization
+-   Resource ownership authorization
 
 ---
 
-# 7. Event Lifecycle
+# 9. Host Authorization
+
+Host operations are protected using the application's simple role authorization helper.
+
+The helper checks the authenticated user's role without requiring a separate role service or role relationship.
+
+For event-specific operations, role authorization is combined with event ownership.
+
+For example:
+
+A user must be a host.
+
+The event must also belong to that host.
+
+This prevents one host from starting, completing, or otherwise controlling another host's event.
+
+---
+
+# 10. Event Lifecycle
 
 An event follows this lifecycle:
 
-```text
 scheduled
-    |
-    | begin broadcast
-    v
-live
-    |
-    | complete broadcast
-    v
-completed
-```
+→ live
+→ completed
 
-An event should only become `live` after the required production crew assignment has been accepted.
+A new event begins in the scheduled state.
 
-Ticket purchasing is permitted while the event is:
+The event can only become live after the required crew assignment has been accepted.
 
-```text
-scheduled
-```
+The event can only be completed after it has become live.
 
-or:
-
-```text
-live
-```
-
-Ticket purchasing is rejected for terminal states such as:
-
-```text
-completed
-```
+The lifecycle is enforced through state-transition logic in the application Actions.
 
 ---
 
-# 8. Financial Lifecycle
+# 11. Crew Workflow
 
-A ticket purchase and payment confirmation are separate operations.
+The crew workflow has two distinct responsibilities.
 
-## Initial purchase
+## Host
 
-```text
-Ticket
-    pending
+The host assigns a production crew member to the event.
 
-PaymentTransaction
-    pending
-```
+The assignment initially represents a pending crew assignment.
 
-## Payment webhook
+## Crew member
 
-After a valid payment webhook:
+The assigned crew member confirms availability.
 
-```text
-PaymentTransaction
-    captured
+The crew member must be the specific crew member attached to the assignment.
 
-Ticket
-    active
+The assignment then becomes accepted.
 
-LedgerEntry
-    ticket_sale
-```
+The host can subsequently start the broadcast.
 
-This separation allows the API to safely handle asynchronous payment providers.
+The complete flow is:
 
----
+Host creates event
+→ Host assigns crew
+→ Crew assignment is pending
+→ Assigned crew member confirms availability
+→ Crew assignment becomes accepted
+→ Host starts broadcast
 
-# 9. Idempotency
-
-Ticket purchases use the `Idempotency-Key` HTTP header.
-
-Example:
-
-```http
-Idempotency-Key: ticket-purchase-001
-```
-
-The key represents the logical operation, not the payment-provider reference.
-
-If the same request is retried with the same key, the existing ticket is returned instead of creating another ticket.
-
-Example:
-
-```text
-Request 1
-Idempotency-Key: ticket-purchase-001
-        |
-        v
-Create ticket
-        |
-        v
-Store resource_id against idempotency key
-
-
-Request 2
-Idempotency-Key: ticket-purchase-001
-        |
-        v
-Existing idempotency record found
-        |
-        v
-Return existing ticket
-```
-
-A new purchase operation must use a new idempotency key.
+The host does not accept the crew assignment on behalf of the crew member.
 
 ---
 
-# 10. API Endpoints
+# 12. Authentication — Signup
 
-The currently registered routes are:
+Endpoint:
 
-```text
-POST auth/login
-POST auth/logout
-POST auth/signup
-
-POST crew/assignments/{assignment}/accept
-POST crew/events/{event}/crew-assignments
-
-POST events/host
-POST events/{event}/broadcast/live
-POST events/{event}/broadcast/complete
-
-POST payments/webhook
-
-POST payouts/events/{event}/payouts
-
-POST stream/events/{event}/stream-incidents
-
-POST tickets/events/{event}/tickets
-```
-
----
-
-# 11. Authentication — Signup
-
-## Endpoint
-
-```http
 POST /auth/signup
-```
 
-## Authentication
+This endpoint is public.
 
-Public.
+It creates a user account.
 
-## Headers
+The resulting account can subsequently authenticate through the login endpoint.
 
-```http
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
+The role assigned during registration should follow the application's registration rules.
 
-## Request
-
-The exact registration attributes should match `RegisterRequest`.
-
-Typical JSON:API structure:
-
-```json
-{
-    "data": {
-        "type": "users",
-        "attributes": {
-            "name": "John Doe",
-            "email": "john@example.com",
-            "password": "password",
-            "password_confirmation": "password"
-        }
-    }
-}
-```
-
-## Purpose
-
-Creates a user account.
-
-The resulting user can authenticate and receive a JWT token.
+For development testing, the default host is provided by the database seeder.
 
 ---
 
-# 12. Authentication — Login
+# 13. Authentication — Login
 
-## Endpoint
+Endpoint:
 
-```http
 POST /auth/login
-```
 
-## Authentication
+This endpoint is public.
 
-Public.
+The user provides their login credentials and receives a JWT.
 
-## Request
+The JWT is then used for protected operations.
 
-```json
-{
-    "data": {
-        "type": "auth",
-        "attributes": {
-            "email": "john@example.com",
-            "password": "password"
-        }
-    }
-}
-```
+For a fresh development database, the default host credentials are:
 
-## Purpose
+Email:
 
-Authenticates the user and returns the JWT required by protected endpoints.
+[host@livdot.io](mailto:host@livdot.io)
+
+Password:
+
+password
+
+Role:
+
+host
 
 ---
 
-# 13. Authentication — Logout
+# 14. Authentication — Logout
 
-## Endpoint
+Endpoint:
 
-```http
 POST /auth/logout
-```
 
-## Authentication
+JWT authentication is required.
 
-JWT required.
-
-```http
-Authorization: Bearer <JWT_TOKEN>
-```
-
-## Purpose
-
-Invalidates/logs out the authenticated session according to the configured JWT authentication implementation.
+The endpoint invalidates or terminates the authenticated session according to the configured JWT authentication implementation.
 
 ---
 
-# 14. Create Event
+# 15. Create Event
 
-## Endpoint
+Endpoint:
 
-```http
 POST /events/host
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Host JWT required.
 
-## Headers
+The authenticated user must have the host role.
 
-```http
-Authorization: Bearer <JWT_TOKEN>
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
+The event is created through the LiveEvent service and its underlying Action.
 
-## Request
+The new event receives the scheduled state.
 
-```json
-{
-    "data": {
-        "type": "events",
-        "attributes": {
-            "title": "Lagos Tech Conference 2026",
-            "ticket_price_kobo": 3500000,
-            "scheduled_duration_minutes": 120,
-            "scheduled_starts_at": "2026-10-15T18:00:00+01:00"
-        }
-    }
-}
-```
+The host ID is associated with the event.
 
-## Parameters
+Important event attributes include:
 
-| Parameter                    | Type     | Required | Description            |
-| ---------------------------- | -------- | -------: | ---------------------- |
-| `title`                      | string   |      Yes | Event title            |
-| `ticket_price_kobo`          | integer  |      Yes | Ticket price in kobo   |
-| `scheduled_duration_minutes` | integer  |      Yes | Planned event duration |
-| `scheduled_starts_at`        | datetime |      Yes | Scheduled start time   |
+-   Title
+-   Ticket price in kobo
+-   Scheduled duration in minutes
+-   Scheduled start time
 
-## Event status
+The resulting event state is:
 
-Newly planned events are created with:
-
-```text
 scheduled
-```
-
-Example:
-
-```json
-{
-    "data": {
-        "type": "events",
-        "id": "019...",
-        "attributes": {
-            "title": "Lagos Tech Conference 2026",
-            "ticket_price_kobo": 3500000,
-            "scheduled_duration_minutes": 120,
-            "scheduled_starts_at": "2026-10-15T18:00:00+01:00",
-            "status": "scheduled"
-        }
-    }
-}
-```
 
 ---
 
-# 15. Assign Production Crew
+# 16. Assign Production Crew
 
-## Endpoint
+Endpoint:
 
-```http
 POST /crew/events/{event}/crew-assignments
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Host JWT required.
 
-## URL Parameters
+The authenticated host must own the event.
 
-| Parameter | Type | Description     |
-| --------- | ---- | --------------- |
-| `event`   | UUID | Live event UUID |
+The host selects the production crew member who should work on the event.
 
-## Request
+The resulting crew assignment starts in its pending state.
 
-The crew member information should match the request validation implemented by the application.
+The assignment establishes the relationship between:
 
-JSON:API structure:
+-   Event
+-   Host
+-   Assigned crew member
 
-```json
-{
-    "data": {
-        "type": "crew-assignments",
-        "attributes": {
-            "crew_member_id": "019..."
-        }
-    }
-}
-```
+Only the event host should be allowed to assign crew to that event.
 
-## Purpose
-
-Assigns a production crew member to the event.
+A host cannot assign crew to another host's event.
 
 ---
 
-# 16. Accept Crew Assignment
+# 17. Confirm Crew Availability
 
-## Endpoint
+Endpoint:
 
-```http
 POST /crew/assignments/{assignment}/accept
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Crew JWT required.
 
-## URL Parameters
+The authenticated user must be the crew member assigned to that particular assignment.
 
-| Parameter    | Type | Description          |
-| ------------ | ---- | -------------------- |
-| `assignment` | UUID | Crew assignment UUID |
+The request authorization is handled by the ConfirmCrewAvailabilityRequest.
 
-## Request
+The request verifies that the authenticated user's ID matches the crew member associated with the assignment.
 
-No attributes are required.
+The AcceptCrewAssignmentAction then changes the assignment state from pending to accepted.
 
-The request can contain an empty JSON:API document if the request handler supports an empty body.
+If the assignment has already been accepted, the Action does not create another assignment or perform a duplicate state transition.
 
-Example:
+This operation is therefore idempotent.
 
-```json
-{
-    "data": {
-        "type": "crew-assignments",
-        "id": "019..."
-    }
-}
-```
+The resulting workflow is:
 
-## Purpose
-
-Allows the assigned crew member to confirm availability.
-
-The assignment moves to:
-
-```text
-accepted
-```
-
-The operation is idempotent. Repeating an already accepted assignment does not create another assignment.
+Crew assignment
+→ pending
+→ assigned crew member confirms availability
+→ accepted
 
 ---
 
-# 17. Start Broadcast
+# 18. Start Broadcast
 
-## Endpoint
+Endpoint:
 
-```http
 POST /events/{event}/broadcast/live
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Host JWT required.
 
-## URL Parameters
+The authenticated user must:
 
-| Parameter | Type | Description     |
-| --------- | ---- | --------------- |
-| `event`   | UUID | Live event UUID |
+-   Have the host role
+-   Own the event
 
-## Request
+The event must currently be scheduled.
 
-No additional attributes are required.
+An accepted crew assignment must also exist.
 
-Example:
+If no accepted crew assignment exists, the operation is rejected.
 
-```json
-{
-    "data": {
-        "type": "events",
-        "id": "019..."
-    }
-}
-```
+The successful state transition is:
 
-## Preconditions
-
-The event must be scheduled.
-
-The required crew assignment must have been accepted.
-
-## Result
-
-The event changes:
-
-```text
 scheduled
-    ↓
-live
-```
+→ live
 
-The event's `started_at` timestamp is recorded.
+The server records the event's started_at timestamp when the broadcast becomes live.
+
+This timestamp is later used when determining how much of the scheduled event duration had elapsed when a stream failure occurred.
 
 ---
 
-# 18. Purchase / Reserve Ticket
+# 19. Purchase / Reserve Ticket
 
-## Endpoint
+Endpoint:
 
-```http
 POST /tickets/events/{event}/tickets
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Viewer JWT required.
 
-## Headers
+Ticket purchasing is allowed while the event is:
 
-```http
-Authorization: Bearer <JWT_TOKEN>
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-Idempotency-Key: ticket-purchase-001
-```
+-   scheduled
+-   live
 
-## URL Parameters
+Ticket purchasing is rejected once the event reaches a terminal state such as completed.
 
-| Parameter | Type | Description           |
-| --------- | ---- | --------------------- |
-| `event`   | UUID | Event being purchased |
+The purchase requires:
 
-## Request Body
+-   A payment provider reference
+-   An Idempotency-Key HTTP header
 
-```json
-{
-    "data": {
-        "type": "ticket-reservation",
-        "attributes": {
-            "provider_reference": "01a0b565-a0b5-700c-b5e4-71541ec57786"
-        }
-    }
-}
-```
+The provider reference identifies the external payment transaction.
 
-## Body Parameters
+The Idempotency-Key identifies the API purchase operation.
 
-| Parameter            | Type   | Required | Description                               |
-| -------------------- | ------ | -------: | ----------------------------------------- |
-| `provider_reference` | string |      Yes | Payment-provider transaction/reference ID |
-
-## Header Parameters
-
-| Header            | Required | Description                                   |
-| ----------------- | -------: | --------------------------------------------- |
-| `Idempotency-Key` |      Yes | Unique identifier for this purchase operation |
-| `Authorization`   |      Yes | JWT token                                     |
-| `Accept`          |      Yes | JSON:API media type                           |
-| `Content-Type`    |      Yes | JSON:API media type                           |
-
-## Important distinction
-
-`provider_reference` and `Idempotency-Key` have different purposes.
-
-### Provider reference
-
-```text
-01a0b565-a0b5-700c-b5e4-71541ec57786
-```
-
-Identifies the payment transaction with the external payment provider.
-
-### Idempotency key
-
-```text
-ticket-purchase-001
-```
-
-Identifies the API operation so retries do not create duplicate resources.
+These values have different purposes and should never be treated as interchangeable.
 
 ---
 
-# 19. Ticket Purchase Processing
+# 20. Ticket Purchase Flow
 
-The purchase action performs the operation inside a database transaction.
+Ticket purchasing and payment confirmation are separate operations.
 
-Conceptually:
+The purchase process creates:
 
-```text
-Validate request
-       |
-       v
-Validate Idempotency-Key
-       |
-       v
-Find/create idempotency record
-       |
-       v
-Lock event
-       |
-       v
-Verify event is scheduled/live
-       |
-       v
-Create ticket
-       |
-       v
-Create pending PaymentTransaction
-       |
-       v
-Store ticket ID on idempotency record
-       |
-       v
-Commit
-```
-
-Immediately after the purchase:
-
-```text
 Ticket
-status = pending
-```
+→ pending
 
-and:
-
-```text
 PaymentTransaction
-status = pending
-```
+→ pending
 
-This is expected.
+The ticket does not become active merely because the purchase endpoint was called.
 
-The ticket should not become active merely because the purchase endpoint was called.
+The payment must subsequently be confirmed through the payment webhook.
+
+The purchase operation is performed transactionally so that the idempotency record, ticket, and payment transaction are kept consistent.
 
 ---
 
-# 20. Payment Webhook
+# 21. Idempotent Ticket Purchase
 
-## Endpoint
+The Idempotency-Key prevents duplicate ticket purchases when a client retries the same operation.
 
-```http
+The first request creates the ticket and associates the created ticket with the idempotency record.
+
+If the same Idempotency-Key is submitted again, the existing ticket is returned.
+
+This protects against situations such as:
+
+-   Client timeout
+-   Network retry
+-   Duplicate client submission
+-   Application-level retry
+
+A new logical purchase operation must use a new Idempotency-Key.
+
+---
+
+# 22. Payment Webhook
+
+Endpoint:
+
 POST /payments/webhook
-```
 
-## Authentication
+The webhook is public because it is called by the external payment provider.
 
-Public endpoint.
+The production implementation should verify the provider's webhook signature before accepting the request.
 
-The production implementation should validate the payment provider's webhook signature before accepting the event.
+The webhook contains:
 
-## Headers
+-   Provider event ID
+-   Provider payment reference
 
-```http
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
+The provider reference must correspond to an existing PaymentTransaction created during ticket reservation.
 
-No JWT should be required for a provider webhook.
+The webhook does not create an arbitrary ticket or payment transaction from scratch.
 
-## Request
-
-```json
-{
-    "data": {
-        "type": "payment-transactions",
-        "attributes": {
-            "provider_event_id": "evt_123456",
-            "provider_reference": "01a0b565-a0b5-700c-b5e4-71541ec57786"
-        }
-    }
-}
-```
-
-## Parameters
-
-| Parameter            | Type   | Required | Description                                     |
-| -------------------- | ------ | -------: | ----------------------------------------------- |
-| `provider_event_id`  | string |      Yes | Unique event ID generated by payment provider   |
-| `provider_reference` | string |      Yes | Existing payment reference from ticket purchase |
-
-The `provider_reference` must match the value stored in:
-
-```text
-payment_transactions.provider_reference
-```
+It confirms an existing pending payment.
 
 ---
 
-# 21. Payment Capture Flow
+# 23. Payment Capture
 
-The webhook performs an atomic payment capture.
+The payment capture process is handled transactionally.
 
-Before webhook:
+The system:
 
-```text
+1. Finds the payment using the provider reference.
+2. Locks the payment record.
+3. Checks whether the payment has already been captured.
+4. Validates that the provider event has not already been associated with another payment.
+5. Marks the payment as captured.
+6. Activates the associated ticket.
+7. Records the ticket access timestamp.
+8. Creates the ticket sale ledger entry.
+9. Commits the transaction.
+10. Dispatches the PaymentCaptured event.
+
+The resulting state is:
+
 PaymentTransaction
-status = pending
+→ captured
 
 Ticket
-status = pending
-```
+→ active
 
-After successful webhook:
-
-```text
-PaymentTransaction
-status = captured
-provider_event_id = evt_123456
-captured_at = <timestamp>
-
-Ticket
-status = active
-granted_at = <timestamp>
-
-LedgerEntry
-entry_type = ticket_sale
-```
-
-The financial operations occur within a database transaction.
-
-Conceptually:
-
-```text
-Payment webhook
-      |
-      v
-Find PaymentTransaction
-      |
-      v
-Lock payment row
-      |
-      v
-Already captured?
-   /       \
- yes        no
- |           |
-return      continue
-             |
-             v
-Check provider event ID
-             |
-             v
-Mark payment captured
-             |
-             v
-Activate ticket
-             |
-             v
-Create ticket_sale ledger entry
-             |
-             v
-Commit transaction
-```
+Ledger
+→ ticket_sale
 
 ---
 
-# 22. Payment Webhook Idempotency
+# 24. Payment Webhook Idempotency
 
-The same payment webhook may be delivered more than once by a payment provider.
+Payment providers may deliver the same webhook more than once.
 
-The capture operation therefore checks:
+The payment capture operation is therefore idempotent.
 
-```text
-payment.status === captured
-```
+If the payment is already captured, the system returns the existing payment without creating another financial ledger entry.
 
-If already captured, the existing payment is returned without creating another financial ledger entry.
+The provider event ID is also checked to prevent the same external event from being associated with another payment.
 
-Example:
+This protects against duplicate:
 
-```text
-Webhook 1
-evt_123456
-    ↓
-Payment captured
-    ↓
-Ticket activated
-    ↓
-ticket_sale created
+-   Payment captures
+-   Ticket activation
+-   Ticket sale ledger entries
 
+The key principle is:
 
-Webhook 2
-evt_123456
-    ↓
-Payment already captured
-    ↓
-No duplicate ticket_sale
-```
-
-This prevents duplicate financial records caused by webhook retries.
+Retries may happen, but retries must not create duplicate financial state.
 
 ---
 
-# 23. Stream Failure Reporting
+# 25. Stream Failure Reporting
 
-## Endpoint
+Endpoint:
 
-```http
 POST /stream/events/{event}/stream-incidents
-```
 
-## Authentication
+Authentication:
 
 JWT required.
 
-## URL Parameters
-
-| Parameter | Type | Description                   |
-| --------- | ---- | ----------------------------- |
-| `event`   | UUID | Event whose stream has failed |
-
-## Request
-
-Example:
-
-```json
-{
-    "data": {
-        "type": "stream-incidents",
-        "attributes": {}
-    }
-}
-```
+The endpoint reports that a live event has experienced a stream failure.
 
 The failure timestamp is generated by the server.
 
+The operation is handled by:
+
+ReportStreamFailureAction
+
+This Action is responsible for recording the incident and determining whether the incident qualifies for automatic refunds.
+
+It does not perform the actual refund processing.
+
 ---
 
-# 24. Stream Failure and the 25% Rule
+# 26. ReportStreamFailureAction
 
-The assessment requires a specific automatic-refund rule:
+ReportStreamFailureAction has a focused responsibility.
 
-> If the stream fails before 25% of the scheduled event duration has elapsed, viewers are eligible for an automatic full refund.
+It:
 
-The threshold is calculated from:
+1. Locks the event.
+2. Confirms that the event is currently live.
+3. Confirms that the event has a started_at timestamp.
+4. Records the failure timestamp.
+5. Calculates how much scheduled event time has elapsed.
+6. Calculates the automatic-refund threshold.
+7. Determines whether the incident is eligible for automatic refunds.
+8. Creates the StreamIncident.
+9. Dispatches the StreamFailureReported event after the transaction succeeds.
 
-```text
-scheduled_duration_minutes × 25%
-```
+The Action therefore records the business fact:
 
-Example:
+A stream failure occurred.
 
-```text
-Scheduled duration = 120 minutes
+It also records:
 
-120 × 25%
-= 30 minutes
-```
+Whether the failure qualifies for automatic refunds.
+
+It does not directly loop through tickets and issue refunds.
+
+---
+
+# 27. The 25% Automatic Refund Rule
+
+The assessment requires automatic full refunds when the stream fails before 25% of the scheduled event duration has elapsed.
+
+The threshold is calculated from the scheduled duration.
+
+For example:
+
+A 120-minute event has a 30-minute threshold.
 
 Therefore:
 
-```text
-Failure at 10 minutes
-→ automatic refunds eligible
+-   Failure before 30 minutes: automatic refund eligible
+-   Failure at exactly 30 minutes: not before the threshold
+-   Failure after 30 minutes: automatic refund not eligible
 
-Failure at 20 minutes
-→ automatic refunds eligible
+The implementation uses a strict "less than" comparison.
 
-Failure at 29 minutes
-→ automatic refunds eligible
-
-Failure at exactly 30 minutes
-→ not before 25%
-
-Failure at 45 minutes
-→ admin review required
-```
-
-The implementation uses a strict `<` comparison, meaning exactly 25% is not considered "before 25%."
+Therefore, exactly 25% of the scheduled duration does not qualify for automatic refunds.
 
 ---
 
-# 25. Early Stream Failure
+# 28. StreamFailureReported Event
 
-When a stream fails before the threshold:
+After ReportStreamFailureAction successfully commits the StreamIncident, it dispatches:
 
-```text
-Event
-    live
+StreamFailureReported
 
-StreamIncident
-    automatic_refunds_eligible = true
-```
+The event communicates that a stream failure has been recorded.
 
-Active tickets become eligible for full refunds.
+The event allows the application to react to the incident without placing all post-incident work inside the original HTTP request.
 
-Refund records are created for the ticket amount.
+The event is handled by:
 
-Example:
-
-```text
-Ticket amount
-₦35,000
-
-Refund
-₦35,000
-```
-
-The corresponding financial ledger records the refund reserve.
-
-Conceptually:
-
-```text
-Ticket Sale
-+35,000
-
-Refund Reserve
--35,000
-
-Net payable
-0
-```
+StreamFailureReportedListener
 
 ---
 
-# 26. Stream Failure After 25%
+# 29. StreamFailureReportedListener
+
+The listener is responsible for reacting to a reported stream failure.
+
+For an automatically refundable incident, the listener dispatches:
+
+ProcessIncidentRefundsJob
+
+The listener can also be used for non-financial side effects such as:
+
+-   Host notifications
+-   Viewer notifications
+-   Monitoring
+-   Analytics
+-   Operations alerts
+
+The listener should not contain the detailed refund business logic.
+
+The refund business logic belongs to:
+
+IssueIncidentRefundsAction
+
+---
+
+# 30. ProcessIncidentRefundsJob
+
+ProcessIncidentRefundsJob is the asynchronous execution layer for automatic incident refunds.
+
+The Job receives the StreamIncident identifier.
+
+When the queue worker processes the Job, it retrieves the incident and invokes:
+
+IssueIncidentRefundsAction
+
+The Job does not decide how refunds are calculated or how tickets are modified.
+
+Its main responsibilities are:
+
+-   Queue the refund operation
+-   Execute it outside the HTTP request
+-   Retry transient failures
+-   Provide controlled backoff between attempts
+
+The current retry configuration allows three attempts with increasing delays.
+
+This means a temporary failure during refund processing does not immediately abandon the operation.
+
+---
+
+# 31. Why Refund Processing Uses a Job
+
+Refund processing may involve multiple tickets and multiple database records.
+
+Performing all refund processing directly inside the stream-failure HTTP request would make the request responsible for potentially large amounts of work.
+
+Using a queued Job separates the concerns:
+
+Stream failure request
+→ record incident
+→ return response
+
+Queue worker
+→ process refunds asynchronously
+
+This also allows the refund operation to be retried if a temporary infrastructure or database failure occurs.
+
+The important principle is:
+
+Retries handle transient failures.
+
+Idempotency prevents those retries from creating duplicate financial records.
+
+---
+
+# 32. IssueIncidentRefundsAction
+
+IssueIncidentRefundsAction contains the actual automatic refund business logic.
+
+It is called by ProcessIncidentRefundsJob.
+
+The Action:
+
+1. Locks the StreamIncident.
+2. Loads the associated event.
+3. Confirms that the incident is eligible for automatic refunds.
+4. Finds active tickets belonging to the event.
+5. Locks those ticket records.
+6. Creates a refund for each eligible ticket.
+7. Revokes the ticket.
+8. Creates the corresponding refund reserve ledger entry.
+9. Commits the transaction.
+
+All of these state and financial changes are performed transactionally.
+
+---
+
+# 33. Refund Idempotency
+
+Refund processing must be safe when the Job is retried.
+
+The refund is identified using the ticket and stream incident.
+
+This means the same ticket should not receive multiple refunds for the same incident.
+
+The refund ledger entry is also created idempotently using the refund identity.
+
+Therefore, if the Job runs twice for the same incident:
+
+First execution:
+
+Refund created
+→ Ticket revoked
+→ Refund reserve created
+
+Second execution:
+
+Existing refund recognized
+→ No duplicate refund
+→ No duplicate refund reserve
+
+This is particularly important because queued Jobs can be retried.
+
+---
+
+# 34. Automatic Refund Financial Flow
+
+For an early stream failure:
+
+Ticket sale:
+
+Positive financial entry
+
+Refund reserve:
+
+Negative financial effect against the payable balance
+
+The resulting event balance is therefore:
+
+Ticket sales
+minus
+Refund reserves
+
+For example:
+
+Ticket sales: 10,500,000 kobo
+
+Refund reserves: 3,500,000 kobo
+
+Payable balance: 7,000,000 kobo
+
+---
+
+# 35. Stream Failure After the Threshold
 
 If the stream fails at or after 25% of the scheduled duration:
 
-```text
 automatic_refunds_eligible = false
-```
 
-No automatic refund should be created by the stream-failure operation.
+The automatic refund Job must not process the incident.
 
-Instead, the incident should enter the administrative review workflow.
+Instead, the incident enters the administrative review path.
 
-Conceptually:
+The intended workflow is:
 
-```text
 Stream failure
-      |
-      v
-Calculate elapsed duration
-      |
-      +-----------------------------+
-      |                             |
-      | < 25%                       | >= 25%
-      v                             v
-Automatic refund              Admin review
-eligible                       required
-      |                             |
-      v                             v
-Refund active tickets        Admin decides
-```
+→ Calculate elapsed duration
+→ Determine threshold
+→ Automatic refund eligible?
 
-This distinction is important because the business rule does not provide automatic refunds after the threshold.
+If yes:
 
----
+StreamFailureReported
+→ StreamFailureReportedListener
+→ ProcessIncidentRefundsJob
+→ IssueIncidentRefundsAction
 
-# 27. Refund Integrity
+If no:
 
-Refund processing must be idempotent.
+StreamFailureReported
+→ administrative review workflow
 
-A ticket must not receive multiple refunds for the same stream incident.
-
-The refund record is associated with:
-
-```text
-ticket_id
-stream_incident_id
-amount_kobo
-reason
-```
-
-The refund amount is based on the ticket amount rather than being recalculated from potentially mutable event data.
+The automatic refund Action explicitly protects this rule by refusing to process an incident that is not marked as automatically refundable.
 
 ---
 
-# 28. Complete Broadcast
+# 36. Administrative Review
 
-## Endpoint
+Failures occurring at or after the automatic-refund threshold require administrative review.
 
-```http
+The current automatic refund flow does not treat these incidents as automatically refundable.
+
+The administrative review workflow is separate from the automatic refund Job.
+
+The intended process is:
+
+Late stream failure
+→ Incident recorded
+→ Automatic refund eligibility is false
+→ Administrator reviews incident
+→ Administrator determines whether refunds should be approved
+→ Approved refunds are processed through the appropriate refund operation
+
+This prevents a late stream failure from being automatically refunded simply because the refund Job was dispatched or retried.
+
+---
+
+# 37. Complete Broadcast
+
+Endpoint:
+
 POST /events/{event}/broadcast/complete
-```
 
-## Authentication
+Authentication:
 
-JWT required.
+Host JWT required.
 
-## URL Parameters
+The authenticated user must own the event.
 
-| Parameter | Type | Description |
-| --------- | ---- | ----------- |
-| `event`   | UUID | Event UUID  |
+The event must currently be live.
 
-## Request
+A successful completion changes:
 
-```json
-{
-    "data": {
-        "type": "events",
-        "id": "019..."
-    }
-}
-```
-
-## Result
-
-The event moves:
-
-```text
 live
-    ↓
-completed
-```
+→ completed
 
-The server records:
+The server records completed_at.
 
-```text
-completed_at
-```
-
-Only appropriate event states should be allowed to transition to completed.
+Once completed, the event cannot be started again through the normal broadcast-start operation.
 
 ---
 
-# 29. Payout
+# 38. Payout
 
-## Endpoint
+Endpoint:
 
-```http
 POST /payouts/events/{event}/payouts
-```
 
-## Authentication
+Authentication:
 
 JWT required.
 
-## URL Parameters
+The payout operation is only available after the event has completed.
 
-| Parameter | Type | Description          |
-| --------- | ---- | -------------------- |
-| `event`   | UUID | Completed event UUID |
-
-## Request
-
-```json
-{
-    "data": {
-        "type": "payouts",
-        "attributes": {}
-    }
-}
-```
-
-## Preconditions
-
-The event must be:
-
-```text
-completed
-```
-
-A payout cannot be created while the event is still:
-
-```text
-scheduled
-```
-
-or:
-
-```text
-live
-```
-
----
-
-# 30. Payout Calculation
-
-The payout amount is derived from the event's financial ledger.
+The payout amount is calculated from the financial ledger.
 
 The intended calculation is:
 
-```text
-payable amount
-=
-ticket sales
--
-refund reserves
-```
+Ticket sales
+minus
+Refund reserves
 
-For example:
-
-```text
-Ticket sales       10,500,000 kobo
-Refund reserves     3,500,000 kobo
-----------------------------------
-Payable             7,000,000 kobo
-```
-
-The payout action must not simply sum every ledger entry because refund reserve entries must reduce the payable balance.
+The payout must not simply sum all ledger entries because refund reserves reduce the amount payable to the host.
 
 ---
 
-# 31. Payout Idempotency
+# 39. Payout Idempotency
 
-Payout creation is idempotent for an event.
+An event should have only one payout.
 
-The event should have at most one payout record.
+The payout operation therefore finds or creates the payout associated with the event rather than creating a new payout every time the endpoint is called.
 
-Conceptually:
+Repeated payout requests should not create duplicate payout records.
 
-```text
-POST /payouts/events/{event}/payouts
-          |
-          v
-Check event
-          |
-          v
-Ensure completed
-          |
-          v
-Calculate payable ledger balance
-          |
-          v
-Find/create payout for event
-```
+For a real external payout provider, provider-side idempotency must also be used when sending the actual payout request.
 
-Repeating the request should not create duplicate payouts.
+This protects against a provider timeout where the payout may have succeeded externally even though the application did not receive the response.
 
 ---
 
-# 32. Financial Ledger
+# 40. Financial Ledger
 
-The ledger provides the financial source of truth for event-level accounting.
+The ledger provides the event-level financial accounting record.
 
-Relevant entry types include:
+Important entries include:
 
-```text
-ticket_sale
-refund_reserve
-```
+-   ticket_sale
+-   refund_reserve
+
+Ticket sales increase the payable balance.
+
+Refund reserves reduce the payable balance.
 
 Example:
 
-```text
-ticket_sale       +3,500,000
-ticket_sale       +3,500,000
-ticket_sale       +3,500,000
-refund_reserve    -3,500,000
---------------------------------
-net payable       +7,000,000
-```
+Ticket sale
++3,500,000 kobo
 
-All monetary values are stored as integer kobo rather than floating-point values.
+Ticket sale
++3,500,000 kobo
 
-This avoids floating-point rounding errors in financial calculations.
+Refund reserve
+-3,500,000 kobo
 
----
+Net payable
++3,500,000 kobo
 
-# 33. Event State Machine
+All monetary amounts are represented as integer kobo.
 
-The expected state flow is:
-
-```text
-                  +----------------+
-                  |    scheduled   |
-                  +----------------+
-                          |
-                          | crew accepted
-                          | + start broadcast
-                          v
-                  +----------------+
-                  |      live      |
-                  +----------------+
-                     |          |
-                     |          |
-              stream failure   complete
-                     |          |
-                     v          v
-             stream incident  completed
-```
-
-Stream failure creates a separate `StreamIncident` rather than necessarily changing the event's primary state immediately.
-
-This separates:
-
-```text
-Event lifecycle
-```
-
-from:
-
-```text
-Stream failure / financial consequence
-```
+This avoids floating-point precision problems in financial calculations.
 
 ---
 
-# 34. Database Transactions
+# 41. Financial Integrity
 
-Operations affecting multiple related financial/state records should execute inside database transactions.
+Financial state changes are performed inside database transactions.
 
-Examples:
+Payment capture atomically updates:
 
-## Ticket purchase
-
-```text
-IdempotencyKey
-Ticket
 PaymentTransaction
-```
+→ captured
 
-are created/updated atomically.
-
-## Payment capture
-
-```text
-PaymentTransaction
 Ticket
+→ active
+
 LedgerEntry
-```
+→ ticket_sale
 
-are updated/created atomically.
+Refund processing atomically updates:
 
-## Refund
-
-```text
-StreamIncident
 Refund
+→ created
+
 Ticket
+→ revoked
+
 LedgerEntry
-```
+→ refund_reserve
 
-are handled atomically.
+Payout creation calculates the payable balance from committed ledger state.
 
-## Payout
+This prevents partial financial operations.
 
-```text
-Payout
-```
+For example, the system should not end up with:
 
-is calculated from the committed ledger state while locking the relevant event where necessary.
+Payment captured
+but
+Ticket still pending
+
+or:
+
+Refund created
+but
+Refund ledger entry missing
+
+because these operations are committed together.
 
 ---
 
-# 35. Row Locking
+# 42. Concurrency Protection
 
-Critical state transitions use database row locks.
+Critical operations use row-level locking.
+
+Important state-changing records are locked while their state is being evaluated and changed.
+
+Examples include:
+
+-   LiveEvent
+-   PaymentTransaction
+-   StreamIncident
+-   Ticket
+
+This protects against concurrent requests such as:
+
+Two payment webhooks arriving simultaneously.
+
+Two users attempting to change the same event state simultaneously.
+
+A refund Job being retried while another refund operation is already processing.
+
+The general pattern is:
+
+Load record
+→ lock record
+→ validate current state
+→ perform transition
+→ commit
+
+---
+
+# 43. State Transition Protection
+
+The application does not allow arbitrary state changes.
+
+Event states follow:
+
+scheduled
+→ live
+→ completed
+
+Payment state follows:
+
+pending
+→ captured
+
+Ticket state follows:
+
+pending
+→ active
+
+A stream failure creates a separate StreamIncident rather than treating the incident as an unrestricted event-state transition.
+
+This keeps the primary event lifecycle separate from failure and financial consequences.
+
+---
+
+# 44. Failure and Retry Architecture
+
+The application distinguishes between business operations and asynchronous execution.
+
+The key example is automatic refund processing.
+
+ReportStreamFailureAction records the incident.
+
+StreamFailureReported communicates that the incident exists.
+
+StreamFailureReportedListener reacts to the event.
+
+ProcessIncidentRefundsJob executes refund processing asynchronously and provides retry behavior.
+
+IssueIncidentRefundsAction performs the actual refund business operation.
+
+The architecture is therefore:
+
+ReportStreamFailureAction
+→ StreamFailureReported
+→ StreamFailureReportedListener
+→ ProcessIncidentRefundsJob
+→ IssueIncidentRefundsAction
+
+The Action contains the business rules.
+
+The Job provides asynchronous execution and retry behavior.
+
+The Listener connects the event to the asynchronous operation.
+
+---
+
+# 45. Why the Job and Action Are Separate
+
+The Job and Action serve different purposes.
+
+IssueIncidentRefundsAction answers:
+
+How should this incident's refunds be processed?
+
+ProcessIncidentRefundsJob answers:
+
+When and how should that refund operation be executed asynchronously and retried?
+
+Keeping them separate makes the refund logic reusable and testable without coupling the business operation to Laravel's queue system.
+
+It also makes retry behavior explicit.
+
+---
+
+# 46. Retry and Idempotency Strategy
+
+The system follows an important financial-processing principle:
+
+Retries handle transient failures.
+
+Idempotency prevents retries from creating duplicate state.
 
 For example:
 
-```php
-LiveEvent::lockForUpdate()
-```
+A refund Job may fail after processing some database operations.
 
-This prevents concurrent requests from simultaneously changing the same event.
+The Job may subsequently retry.
 
-Payment capture similarly locks:
+The refund Action must recognize already-created refunds and ledger entries rather than creating additional ones.
 
-```php
-PaymentTransaction::lockForUpdate()
-```
+The same principle applies to payment webhooks.
 
-This is important for race conditions such as:
+A provider may send the same webhook multiple times.
 
-```text
-Webhook A
-       \
-        -> same payment
-       /
-Webhook B
-```
-
-Only one transaction should be able to perform the state transition.
+The payment capture Action recognizes that the payment is already captured and avoids creating another ticket sale.
 
 ---
 
-# 36. Race Conditions
+# 47. End-to-End Event Flow
 
-The system is designed to protect against several common race conditions.
+The complete business workflow is:
 
-## Duplicate ticket purchase
+Signup
+→ Login
+→ Host creates event
+→ Event is scheduled
+→ Host assigns crew
+→ Crew assignment is pending
+→ Assigned crew member confirms availability
+→ Assignment becomes accepted
+→ Host starts broadcast
+→ Event becomes live
+→ Viewer purchases ticket
+→ Payment transaction is pending
+→ Payment provider sends webhook
+→ Payment becomes captured
+→ Ticket becomes active
+→ Ticket sale is recorded in the ledger
+→ Stream continues
+→ Event completes
+→ Event becomes completed
+→ Host payout is calculated from sales less refund reserves
 
-Protected by:
+If the stream fails before the 25% threshold:
 
-```text
-Idempotency-Key
-```
+Stream failure
+→ StreamIncident created
+→ automatic_refunds_eligible is true
+→ StreamFailureReported event
+→ StreamFailureReportedListener
+→ ProcessIncidentRefundsJob
+→ IssueIncidentRefundsAction
+→ Refund created
+→ Ticket revoked
+→ Refund reserve recorded
 
-and database constraints.
+If the stream fails at or after the threshold:
 
-## Duplicate payment webhook
-
-Protected by:
-
-```text
-PaymentTransaction.status
-provider_event_id
-database transaction
-row locking
-```
-
-## Concurrent event state changes
-
-Protected by:
-
-```text
-LiveEvent::lockForUpdate()
-```
-
-## Duplicate refund
-
-Protected by finding/creating the refund using the relevant ticket/incident identity.
-
-## Duplicate payout
-
-Protected by one payout per event.
-
----
-
-# 37. JSON:API Response Structure
-
-Successful responses use a structure such as:
-
-```json
-{
-    "message": "Operation successful",
-    "status": "success",
-    "data": {
-        "type": "tickets",
-        "id": "019...",
-        "attributes": {
-            "live_event_id": "019...",
-            "viewer_id": "019...",
-            "amount_kobo": 3500000,
-            "status": "pending"
-        },
-        "relationships": {}
-    },
-    "included": [],
-    "meta": {},
-    "jsonapi": {
-        "version": "1.1"
-    },
-    "links": {
-        "self": "http://127.0.0.1:8000/tickets/events/019.../tickets"
-    }
-}
-```
-
-The API explicitly identifies:
-
-```json
-"jsonapi": {
-    "version": "1.1"
-}
-```
+Stream failure
+→ StreamIncident created
+→ automatic_refunds_eligible is false
+→ Administrative review required
 
 ---
 
-# 38. JSON:API Resource Types
+# 48. Fresh Database Test Flow
 
-The application uses resource types such as:
+After resetting the database, the recommended test sequence is:
 
-```text
-users
-events
-crew-assignments
-tickets
-payment-transactions
-stream-incidents
-refunds
-payouts
-ledger-entries
-```
-
-The resource type should remain consistent between requests and responses.
-
-For strict JSON:API compliance, resource type naming should use one consistent convention throughout the application.
-
----
-
-# 39. JSON:API Relationships
-
-Relationships should use resource linkage rather than embedding unrelated complete resources.
-
-Example:
-
-```json
-{
-    "data": {
-        "type": "tickets",
-        "id": "019-ticket",
-        "attributes": {
-            "status": "active",
-            "amount_kobo": 3500000
-        },
-        "relationships": {
-            "event": {
-                "data": {
-                    "type": "events",
-                    "id": "019-event"
-                }
-            },
-            "viewer": {
-                "data": {
-                    "type": "users",
-                    "id": "019-user"
-                }
-            }
-        }
-    }
-}
-```
-
-If complete related resources are required, they belong in:
-
-```json
-"included": []
-```
-
-rather than being embedded directly inside the relationship.
+1. Run the migrations and seeders.
+2. Obtain the seeded host credentials.
+3. Login as the default host.
+4. Create a viewer account.
+5. Create a crew account.
+6. Login as the viewer and crew users.
+7. Host creates an event.
+8. Host assigns the crew member.
+9. Crew member accepts the assignment.
+10. Verify the assignment is accepted.
+11. Host starts the broadcast.
+12. Verify the event is live and started_at has been recorded.
+13. Viewer purchases a ticket.
+14. Verify the ticket and payment are pending.
+15. Send the payment webhook.
+16. Verify the payment is captured.
+17. Verify the ticket is active.
+18. Verify a ticket_sale ledger entry exists.
+19. Repeat the payment webhook.
+20. Verify no duplicate ticket_sale ledger entry exists.
+21. Report an early stream failure.
+22. Verify the StreamIncident is automatically refundable.
+23. Verify StreamFailureReported is dispatched.
+24. Verify the listener dispatches ProcessIncidentRefundsJob.
+25. Verify the queue worker processes the Job.
+26. Verify a Refund is created.
+27. Verify the ticket is revoked.
+28. Verify a refund_reserve ledger entry exists.
+29. Dispatch or retry the same refund Job again.
+30. Verify no duplicate refund or refund reserve is created.
+31. Complete the event in a separate successful-event test.
+32. Create the payout.
+33. Verify the payout uses ticket sales less refund reserves.
+34. Repeat the payout request.
+35. Verify that a second payout is not created.
 
 ---
 
-# 40. Error Responses
+# 49. Testing the 25% Boundary
 
-Errors should use HTTP status codes appropriate to the failure.
-
-Examples:
-
-### Missing idempotency key
-
-```http
-422 Unprocessable Entity
-```
-
-Message:
-
-```text
-Idempotency-Key is required.
-```
-
-### Invalid event state
-
-```http
-422 Unprocessable Entity
-```
-
-Message:
-
-```text
-Tickets are not available for this event.
-```
-
-### Payment not found
-
-```http
-404 Not Found
-```
-
-### Duplicate/conflicting provider event
-
-```http
-409 Conflict
-```
-
-### Unauthorized request
-
-```http
-401 Unauthorized
-```
-
-### Forbidden operation
-
-```http
-403 Forbidden
-```
-
----
-
-# 41. Complete End-to-End Test Flow
-
-The following sequence can be used to demonstrate the assessment.
-
-## Step 1 — Create users
-
-```text
-POST /auth/signup
-```
-
-Create at least:
-
-```text
-Host
-Viewer
-Crew member
-```
-
-Authenticate each user.
-
----
-
-## Step 2 — Login
-
-```text
-POST /auth/login
-```
-
-Store the JWT token.
-
----
-
-## Step 3 — Host creates event
-
-```text
-POST /events/host
-```
-
-Example:
-
-```json
-{
-    "data": {
-        "type": "events",
-        "attributes": {
-            "title": "Lagos Tech Conference 2026",
-            "ticket_price_kobo": 3500000,
-            "scheduled_duration_minutes": 120,
-            "scheduled_starts_at": "2026-10-15T18:00:00+01:00"
-        }
-    }
-}
-```
-
-Expected:
-
-```text
-event.status = scheduled
-```
-
-Save:
-
-```text
-event.id
-```
-
----
-
-## Step 4 — Assign crew
-
-```text
-POST /crew/events/{event}/crew-assignments
-```
-
-Assign the production crew member.
-
-Save:
-
-```text
-assignment.id
-```
-
----
-
-## Step 5 — Crew accepts assignment
-
-```text
-POST /crew/assignments/{assignment}/accept
-```
-
-Expected:
-
-```text
-assignment.status = accepted
-```
-
----
-
-## Step 6 — Start broadcast
-
-```text
-POST /events/{event}/broadcast/live
-```
-
-Expected:
-
-```text
-event.status = live
-event.started_at = <timestamp>
-```
-
----
-
-## Step 7 — Purchase ticket
-
-```text
-POST /tickets/events/{event}/tickets
-```
-
-Headers:
-
-```http
-Authorization: Bearer <VIEWER_JWT>
-Idempotency-Key: ticket-purchase-001
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
-
-Body:
-
-```json
-{
-    "data": {
-        "type": "ticket-reservation",
-        "attributes": {
-            "provider_reference": "01a0b565-a0b5-700c-b5e4-71541ec57786"
-        }
-    }
-}
-```
-
-Expected database state:
-
-```text
-Ticket
-status = pending
-
-PaymentTransaction
-status = pending
-provider_reference = 01a0b565-a0b5-700c-b5e4-71541ec57786
-```
-
----
-
-## Step 8 — Confirm payment
-
-```text
-POST /payments/webhook
-```
-
-Body:
-
-```json
-{
-    "data": {
-        "type": "payment-transactions",
-        "attributes": {
-            "provider_event_id": "evt_123456",
-            "provider_reference": "01a0b565-a0b5-700c-b5e4-71541ec57786"
-        }
-    }
-}
-```
-
-Expected:
-
-```text
-PaymentTransaction
-status = captured
-
-Ticket
-status = active
-
-LedgerEntry
-entry_type = ticket_sale
-```
-
----
-
-## Step 9 — Repeat webhook
-
-Send the exact same webhook again.
-
-Expected:
-
-```text
-No duplicate ticket
-No duplicate ledger entry
-Payment remains captured
-```
-
-This demonstrates webhook idempotency.
-
----
-
-# 42. Test the 25% Refund Rule
+The automatic refund rule should be tested independently from the normal happy path.
 
 For a 120-minute event:
 
-```text
-25% = 30 minutes
-```
+25% equals 30 minutes.
 
-To test an early failure, report the failure before 30 minutes have elapsed.
-
-```text
-POST /stream/events/{event}/stream-incidents
-```
+Test an incident before 30 minutes.
 
 Expected:
 
-```text
-StreamIncident
 automatic_refunds_eligible = true
-```
 
-Active tickets receive full refunds.
+The refund Job should be dispatched.
 
-Expected financial result:
-
-```text
-ticket_sale
--
-refund_reserve
-=
-net payable
-```
-
----
-
-# 43. Test Late Stream Failure
-
-For the same 120-minute event, report the stream failure at or after the 30-minute threshold.
+Then test an incident at exactly 30 minutes.
 
 Expected:
 
-```text
 automatic_refunds_eligible = false
-```
 
-No automatic refund should be generated.
+The automatic refund Job should not process the incident.
 
-The incident should be available for the administrative review workflow.
+Finally, test an incident after 30 minutes.
+
+Expected:
+
+automatic_refunds_eligible = false
+
+The incident should require administrative review.
+
+This boundary test is important because the application uses a strict "less than" comparison.
 
 ---
 
-# 44. Complete Event
+# 50. Testing the Crew Authorization
 
-```text
+The crew authorization should also be tested.
+
+Host assigning crew:
+
+The authenticated user must be a host and must own the event.
+
+Crew accepting assignment:
+
+The authenticated user must be the crew member associated with the assignment.
+
+If the host attempts to call the crew acceptance endpoint, the request should be rejected because the ConfirmCrewAvailabilityRequest expects the authenticated user to match the assignment's crew_member_id.
+
+If Crew A attempts to accept Crew B's assignment, the request should also be rejected.
+
+This prevents users from confirming assignments that do not belong to them.
+
+---
+
+# 51. Testing Broadcast Authorization
+
+Starting a broadcast requires:
+
+-   Authenticated user
+-   Host role
+-   Ownership of the event
+-   Event currently scheduled
+-   Accepted crew assignment
+
+A host cannot start another host's event.
+
+A viewer cannot start an event.
+
+A crew member cannot start the event unless the application's authorization rules explicitly grant that capability.
+
+An event without an accepted crew assignment cannot become live.
+
+---
+
+# 52. Testing Refund Idempotency
+
+Refund idempotency should be tested by processing the same incident more than once.
+
+The first execution creates:
+
+-   One refund
+-   One ticket revocation
+-   One refund reserve ledger entry
+
+The second execution must not create:
+
+-   Another refund
+-   Another refund reserve
+-   Another ticket state transition
+
+The final financial state must remain unchanged.
+
+This demonstrates that the queued refund operation is safe to retry.
+
+---
+
+# 53. Testing Payment Idempotency
+
+Send the same payment webhook more than once.
+
+The first webhook should:
+
+-   Capture the payment
+-   Activate the ticket
+-   Create the ticket sale ledger entry
+
+The second webhook should recognize that the payment has already been captured.
+
+It must not create another ticket sale.
+
+This demonstrates safe webhook retry handling.
+
+---
+
+# 54. Testing Ticket Purchase Idempotency
+
+Submit the same ticket purchase request more than once using the same Idempotency-Key.
+
+The first request creates the ticket.
+
+The second request returns the existing ticket associated with that Idempotency-Key.
+
+The database should contain only one ticket for that logical purchase.
+
+A new purchase operation should use a different Idempotency-Key.
+
+---
+
+# 55. Postman Environment
+
+A useful Postman environment should contain:
+
+-   base_url
+-   host_token
+-   viewer_token
+-   crew_token
+-   event_id
+-   assignment_id
+-   ticket_id
+-   payment_reference
+-   provider_event_id
+
+The host token is obtained from the seeded development host.
+
+The viewer and crew tokens are obtained after creating and logging in those users.
+
+IDs generated during each step should be saved into the Postman environment so subsequent requests can use them.
+
+---
+
+# 56. Route Reference
+
+Authentication:
+
+POST /auth/signup
+POST /auth/login
+POST /auth/logout
+
+Crew:
+
+POST /crew/events/{event}/crew-assignments
+POST /crew/assignments/{assignment}/accept
+
+Events:
+
+POST /events/host
+POST /events/{event}/broadcast/live
 POST /events/{event}/broadcast/complete
-```
 
-Expected:
+Tickets:
 
-```text
-event.status = completed
-event.completed_at = <timestamp>
-```
+POST /tickets/events/{event}/tickets
 
----
+Payments:
 
-# 45. Create Payout
+POST /payments/webhook
 
-```text
+Stream incidents:
+
+POST /stream/events/{event}/stream-incidents
+
+Payouts:
+
 POST /payouts/events/{event}/payouts
-```
 
-The payout should be based on:
-
-```text
-ticket sales - refund reserves
-```
-
-Example:
-
-```text
-Sales:
-10,500,000 kobo
-
-Refund reserves:
-3,500,000 kobo
-
-Payout:
-7,000,000 kobo
-```
-
-A second payout request for the same event must not create a duplicate payout.
+The application intentionally does not use an /api prefix.
 
 ---
 
-# 46. Recommended Postman Environment
-
-Create a Postman environment with:
-
-```text
-base_url
-host_token
-viewer_token
-crew_token
-event_id
-assignment_id
-ticket_id
-payment_reference
-provider_event_id
-```
-
-Example:
-
-```text
-base_url = http://127.0.0.1:8000
-```
-
-Then requests can use:
-
-```text
-{{base_url}}/events/host
-```
-
-and:
-
-```text
-{{base_url}}/tickets/events/{{event_id}}/tickets
-```
-
----
-
-# 47. Example Postman Ticket Purchase
-
-## URL
-
-```text
-{{base_url}}/tickets/events/{{event_id}}/tickets
-```
-
-## Method
-
-```text
-POST
-```
-
-## Headers
-
-```text
-Authorization: Bearer {{viewer_token}}
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-Idempotency-Key: ticket-purchase-001
-```
-
-## Body
-
-```json
-{
-    "data": {
-        "type": "ticket-reservation",
-        "attributes": {
-            "provider_reference": "{{payment_reference}}"
-        }
-    }
-}
-```
-
----
-
-# 48. Example Postman Payment Webhook
-
-## URL
-
-```text
-{{base_url}}/payments/webhook
-```
-
-## Method
-
-```text
-POST
-```
-
-## Headers
-
-```text
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-```
-
-## Body
-
-```json
-{
-    "data": {
-        "type": "payment-transactions",
-        "attributes": {
-            "provider_event_id": "{{provider_event_id}}",
-            "provider_reference": "{{payment_reference}}"
-        }
-    }
-}
-```
-
-The `payment_reference` must be the same reference created during ticket reservation.
-
----
-
-# 49. Useful Laravel Commands
-
-List all routes:
-
-```bash
-php artisan route:list
-```
-
-List only event routes:
-
-```bash
-php artisan route:list --path=events
-```
-
-List payment routes:
-
-```bash
-php artisan route:list --path=payments
-```
-
-List ticket routes:
-
-```bash
-php artisan route:list --path=tickets
-```
-
-Run migrations:
-
-```bash
-php artisan migrate
-```
-
-Reset and migrate:
-
-```bash
-php artisan migrate:fresh
-```
-
-Clear application caches:
-
-```bash
-php artisan optimize:clear
-```
-
-Run tests:
-
-```bash
-php artisan test
-```
-
-Open Tinker:
-
-```bash
-php artisan tinker
-```
-
----
-
-# 50. Useful Database Verification
-
-After ticket purchase:
-
-```php
-PaymentTransaction::latest()->first();
-```
-
-Check ticket:
-
-```php
-Ticket::latest()->first();
-```
-
-After payment webhook:
-
-```php
-PaymentTransaction::latest()->first()->status;
-```
-
-Expected:
-
-```text
-captured
-```
-
-Check ticket:
-
-```php
-Ticket::latest()->first()->status;
-```
-
-Expected:
-
-```text
-active
-```
-
-Check ledger:
-
-```php
-LedgerEntry::latest()->first();
-```
-
-Expected:
-
-```text
-ticket_sale
-```
-
-Check stream incidents:
-
-```php
-StreamIncident::latest()->first();
-```
-
-Check refunds:
-
-```php
-Refund::latest()->first();
-```
-
-Check payout:
-
-```php
-Payout::latest()->first();
-```
-
----
-
-# 51. Current Route Map
-
-The application's current route list is:
-
-| Method | Endpoint                                  | Controller action                              |
-| ------ | ----------------------------------------- | ---------------------------------------------- |
-| POST   | `/auth/login`                             | `Auth\AuthController@authenticate`             |
-| POST   | `/auth/logout`                            | `Auth\AuthController@logout`                   |
-| POST   | `/auth/signup`                            | `Auth\AuthController@register`                 |
-| POST   | `/crew/assignments/{assignment}/accept`   | `CrewAssignmentController@confirmAvailability` |
-| POST   | `/crew/events/{event}/crew-assignments`   | `CrewAssignmentController@assignCrew`          |
-| POST   | `/events/host`                            | `EventController@hostEvent`                    |
-| POST   | `/events/{event}/broadcast/complete`      | `EventController@finalizeBroadcast`            |
-| POST   | `/events/{event}/broadcast/live`          | `EventController@beginBroadcast`               |
-| POST   | `/payments/webhook`                       | `TicketController@confirmPayment`              |
-| POST   | `/payouts/events/{event}/payouts`         | `PayoutController@preparePayout`               |
-| POST   | `/stream/events/{event}/stream-incidents` | `StreamController@recordFailure`               |
-| POST   | `/tickets/events/{event}/tickets`         | `TicketController@reserveAccess`               |
-
-There is intentionally no `/api` prefix in the current route configuration.
-
----
-
-# 52. Architecture
+# 57. Architecture
 
 The application follows a simple layered architecture:
 
-```text
-HTTP Request
-     |
-     v
 FormRequest
-     |
-     v
-Controller
-     |
-     v
-Service
-     |
-     v
-Action
-     |
-     v
-Models / Database
-```
+→ Controller
+→ Service
+→ Action
+→ Model / Database
 
-The preferred responsibility boundaries are:
+The responsibilities are:
 
-### FormRequest
+FormRequest:
 
-Responsible for:
-
--   Validation
+-   Request validation
 -   Request authorization
 -   JSON:API request normalization
 
-### Controller
+Controller:
 
-Responsible for:
+-   Receive HTTP request
+-   Pass validated data to the Service
+-   Return the API response
 
--   Receiving the request
--   Passing validated input to the Service
--   Returning the API response
+Service:
 
-### Service
+-   Orchestrate the application operation
+-   Call the appropriate Action
 
-Responsible for:
+Action:
 
--   Orchestrating the application operation
--   Calling the appropriate Action
-
-### Action
-
-Responsible for:
-
--   Business implementation
--   Transactions
+-   Business logic
+-   Database transactions
 -   State transitions
--   Locking
+-   Row locking
 -   Financial integrity
 -   Idempotency
 
-### Model
-
-Responsible for:
+Model:
 
 -   Persistence
 -   Relationships
 -   Casts
 -   Model-level behavior
 
----
+Events and listeners are used for post-operation side effects.
 
-# 53. Business Rules
-
-The main business rules are:
-
-1. A planned event starts in `scheduled`.
-2. A broadcast can transition from `scheduled` to `live`.
-3. A broadcast can transition from `live` to `completed`.
-4. Required crew availability must be confirmed before the broadcast begins.
-5. Tickets can be purchased while an event is `scheduled` or `live`.
-6. Ticket purchase creates a pending payment transaction.
-7. Ticket access becomes active only after payment confirmation.
-8. Payment webhooks are idempotent.
-9. Ticket purchases are idempotent through `Idempotency-Key`.
-10. Payment capture and ticket activation occur atomically.
-11. Every successful ticket sale creates a financial ledger entry.
-12. Stream failure before 25% of scheduled duration makes viewers eligible for automatic full refunds.
-13. Stream failure at or after 25% requires administrative review rather than automatic refund.
-14. Refunds must not be duplicated.
-15. Payouts can only be generated for completed events.
-16. Payout amount is based on ticket sales less refund reserves.
-17. An event must not receive multiple payouts.
-18. Monetary amounts are represented as integer kobo.
-19. Critical state transitions use database transactions and row locking.
-20. Provider references and provider event IDs are treated as external payment identifiers and must be handled idempotently.
+Jobs are used for asynchronous and retryable operations.
 
 ---
 
-# 54. Assessment Focus
+# 58. Action Responsibilities
 
-The implementation specifically demonstrates:
+The principal Actions have focused responsibilities.
 
-### State management
+CreateLiveEventAction:
 
-```text
-scheduled → live → completed
-```
+Creates a new scheduled event.
 
-### Payment state management
+AcceptCrewAssignmentAction:
 
-```text
-pending → captured
-```
+Changes a pending crew assignment to accepted.
 
-### Ticket state management
+BeginLiveEventAction:
 
-```text
-pending → active
-```
+Validates the event's live-start requirements and changes the event from scheduled to live.
 
-### Stream failure handling
+CapturePaymentAction:
 
-```text
-stream failure
-      |
-      +-- before 25% → automatic refund
-      |
-      +-- >= 25% → administrative review
-```
+Captures a payment, activates the ticket, and records the ticket sale.
 
-### Financial accounting
+PurchaseTicketAction:
 
-```text
-ticket sales - refunds = payable balance
-```
+Handles ticket reservation, payment transaction creation, and purchase idempotency.
 
-### Idempotency
+ReportStreamFailureAction:
 
-```text
-ticket purchase
-payment webhook
-refund
-payout
-```
+Records a stream failure and determines automatic refund eligibility.
 
-### Concurrency protection
+IssueIncidentRefundsAction:
 
-```text
-database transactions
-row-level locking
-unique business identifiers
-```
+Processes automatic refunds for an eligible stream incident.
 
-These mechanisms are intended to prevent duplicate payments, duplicate tickets, duplicate refunds, duplicate payouts, and inconsistent event state.
+CreatePayoutAction:
+
+Calculates and creates the event payout from the financial ledger.
 
 ---
 
-# 55. Troubleshooting
+# 59. Event and Listener Responsibilities
 
-## `Idempotency-Key is required`
+The main event-driven refund flow is:
 
-Ensure the request contains:
+StreamFailureReported
 
-```http
-Idempotency-Key: ticket-purchase-001
-```
+This event represents a successfully recorded stream failure.
 
-It belongs in the HTTP headers, not the JSON body.
+StreamFailureReportedListener
 
----
+This listener reacts to the incident.
 
-## `Tickets are not available for this event`
+If automatic refunds are allowed, it dispatches ProcessIncidentRefundsJob.
 
-Check:
+The listener may also trigger non-financial side effects such as notifications, monitoring, or analytics.
 
-```php
-$event->status;
-```
-
-The status must be:
-
-```text
-scheduled
-```
-
-or:
-
-```text
-live
-```
+The listener should not perform the detailed refund loop itself.
 
 ---
 
-## Payment webhook returns `404`
+# 60. Job Responsibilities
 
-First verify the route:
+ProcessIncidentRefundsJob is the single Job responsible for automatic incident refund processing.
 
-```bash
-php artisan route:list --path=payments
-```
+There is no need for separate Jobs such as:
 
-Expected:
+ProcessAutomaticIncidentRefundsJob
 
-```text
-POST payments/webhook
-```
+and:
 
-Then verify that the payment reference exists:
+ProcessIncidentRefundsJob
 
-```php
-PaymentTransaction::where(
-    'provider_reference',
-    '01a0b565-a0b5-700c-b5e4-71541ec57786'
-)->first();
-```
+The single Job is sufficient.
 
-The webhook's:
+The Job:
 
-```text
-provider_reference
-```
+-   Receives the incident ID
+-   Runs asynchronously
+-   Invokes IssueIncidentRefundsAction
+-   Retries transient failures
+-   Uses backoff between attempts
 
-must exactly match the payment transaction created during ticket purchase.
+The refund business rules remain in IssueIncidentRefundsAction.
 
 ---
 
-## Payment remains `pending`
+# 61. Business Rules
 
-The payment webhook has either:
+The primary business rules are:
 
--   not been received,
--   referenced the wrong `provider_reference`,
--   failed validation,
--   failed provider-event validation,
--   or failed before the capture transaction committed.
-
-Check the application logs:
-
-```bash
-tail -f storage/logs/laravel.log
-```
+1. New events start in scheduled.
+2. Only the event host can control their event.
+3. A host can assign production crew to their event.
+4. The assigned crew member confirms their availability.
+5. An event requires an accepted crew assignment before going live.
+6. Only scheduled events can transition to live.
+7. Only live events can transition to completed.
+8. Tickets can be purchased while the event is scheduled or live.
+9. Ticket purchase creates a pending payment transaction.
+10. Ticket access becomes active only after successful payment confirmation.
+11. Payment webhooks are idempotent.
+12. Ticket purchases are idempotent through Idempotency-Key.
+13. Payment capture and ticket activation occur atomically.
+14. Every successful ticket sale creates a ticket_sale ledger entry.
+15. Stream failures are recorded as StreamIncidents.
+16. Stream failure before 25% of scheduled duration is eligible for automatic full refunds.
+17. Stream failure at or after 25% requires administrative review.
+18. Automatic refunds are processed asynchronously through a queued Job.
+19. Refund processing is retryable.
+20. Refund processing is idempotent.
+21. Refunds are associated with both the ticket and stream incident.
+22. A refund reserve reduces the event's payable balance.
+23. Payouts can only be generated for completed events.
+24. An event must not receive multiple payout records.
+25. Payout amount is ticket sales less refund reserves.
+26. Monetary amounts are stored as integer kobo.
+27. Critical state transitions use database transactions.
+28. Critical concurrent operations use row-level locking.
+29. External payment identifiers are treated as provider-controlled identifiers.
+30. Production webhooks must verify provider signatures.
 
 ---
 
-## Ticket remains `pending`
+# 62. Failure and Idempotency Summary
 
-Check the associated payment:
+The system protects important operations using several complementary mechanisms.
 
-```php
-$ticket->paymentTransaction;
-```
+Ticket purchase:
 
-The ticket becomes active as part of successful payment capture.
+Idempotency-Key
+→ prevents duplicate logical purchases
+
+Payment webhook:
+
+Payment state + provider event ID + transaction
+→ prevents duplicate payment capture
+
+Refund processing:
+
+Ticket + StreamIncident identity + transaction
+→ prevents duplicate refunds
+
+Payout:
+
+One payout per event
+→ prevents duplicate payout records
+
+Concurrency:
+
+Row locking + database transactions
+→ prevents conflicting simultaneous state transitions
+
+Queue failures:
+
+Job retries + idempotent Action
+→ allows transient failures to recover without duplicating financial state
 
 ---
 
-# 56. Production Considerations
+# 63. Financial Flow Summary
+
+A successful ticket purchase eventually produces:
+
+PaymentTransaction
+→ captured
+
+Ticket
+→ active
+
+LedgerEntry
+→ ticket_sale
+
+An automatically refundable stream failure produces:
+
+Refund
+→ created
+
+Ticket
+→ revoked
+
+LedgerEntry
+→ refund_reserve
+
+The host's eventual payout is based on:
+
+Ticket sales
+minus
+Refund reserves
+
+This keeps the payout calculation based on recorded financial events rather than reconstructing financial state from mutable ticket or event data.
+
+---
+
+# 64. Production Considerations
 
 Before production deployment, the following should be added or verified:
 
--   Payment-provider webhook signature verification
+-   Payment provider webhook signature verification
 -   Provider API verification where required
 -   Database unique constraints for business identifiers
--   Proper queue configuration for asynchronous work
--   Retry/backoff policies for external providers
--   Structured application logging
+-   Queue configuration
+-   Job retry and failure monitoring
+-   Structured logging
 -   Monitoring and alerting
 -   Administrative refund-review endpoints
--   Authorization policies for administrative actions
+-   Authorization policies for administrative operations
 -   HTTPS
 -   Secure JWT configuration
--   Production database backups
--   Redis configuration where queues are used
--   Rate limiting on authentication and webhook endpoints
--   Secrets managed through environment variables/secrets management
+-   Database backups
+-   Redis configuration
+-   Authentication rate limiting
+-   Webhook rate limiting where appropriate
+-   Production secret management
+-   External payout provider idempotency
+-   Failed-job monitoring
 
-Webhook endpoints should never trust arbitrary client-provided payment events in production without authenticating the payment provider.
-
----
-
-# 57. Quick Reference
-
-## Authentication
-
-```text
-POST /auth/signup
-POST /auth/login
-POST /auth/logout
-```
-
-## Events
-
-```text
-POST /events/host
-POST /events/{event}/broadcast/live
-POST /events/{event}/broadcast/complete
-```
-
-## Crew
-
-```text
-POST /crew/events/{event}/crew-assignments
-POST /crew/assignments/{assignment}/accept
-```
-
-## Tickets
-
-```text
-POST /tickets/events/{event}/tickets
-```
-
-## Payments
-
-```text
-POST /payments/webhook
-```
-
-## Stream failures
-
-```text
-POST /stream/events/{event}/stream-incidents
-```
-
-## Payouts
-
-```text
-POST /payouts/events/{event}/payouts
-```
+The payment webhook must never trust arbitrary client-provided payment events in production without authenticating the payment provider.
 
 ---
 
-# 58. End-to-End Summary
+# 65. Troubleshooting
 
-The complete LIV DOT workflow is:
+## "An accepted crew assignment is required."
 
-```text
-                     ┌──────────────┐
-                     │    Signup    │
-                     └──────┬───────┘
-                            ↓
-                     ┌──────────────┐
-                     │    Login     │
-                     └──────┬───────┘
-                            ↓
-                     ┌──────────────┐
-                     │ Create Event │
-                     └──────┬───────┘
-                            ↓
-                       scheduled
-                            ↓
-                     ┌──────────────┐
-                     │ Assign Crew  │
-                     └──────┬───────┘
-                            ↓
-                     ┌──────────────┐
-                     │ Crew Accepts │
-                     └──────┬───────┘
-                            ↓
-                     ┌──────────────┐
-                     │  Go Live     │
-                     └──────┬───────┘
-                            ↓
-                           live
-                            ↓
-                 ┌──────────────────────┐
-                 │   Purchase Ticket    │
-                 └──────────┬───────────┘
-                            ↓
-                    Ticket: pending
-                            +
-                 Payment: pending
-                            ↓
-                 ┌──────────────────────┐
-                 │   Payment Webhook    │
-                 └──────────┬───────────┘
-                            ↓
-                    Payment: captured
-                            +
-                      Ticket: active
-                            +
-                     Ledger: sale
-                            ↓
-                 ┌──────────────────────┐
-                 │   Stream Failure?    │
-                 └──────────┬───────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              ↓                           ↓
-          Before 25%                  >= 25%
-              ↓                           ↓
-      Automatic refund             Admin review
-              │                           │
-              └─────────────┬─────────────┘
-                            ↓
-                    Complete Broadcast
-                            ↓
-                        completed
-                            ↓
-                         Payout
-                            ↓
-                  Sales - Refunds
-                            ↓
-                      Host payout
-```
+The event cannot go live until a crew assignment has been accepted.
 
-This represents the intended end-to-end business flow of the LIV DOT assessment.
+Verify that:
+
+-   The crew assignment exists.
+-   The correct crew member was assigned.
+-   The assigned crew member has authenticated.
+-   The assigned crew member called the acceptance endpoint.
+-   The assignment status is accepted.
+
+The host does not accept the crew assignment. The assigned crew member does.
+
+---
+
+## "403 Forbidden" when accepting a crew assignment
+
+The acceptance request is authorized by ConfirmCrewAvailabilityRequest.
+
+The authenticated user must match the assignment's crew_member_id.
+
+If the request is made using the host JWT, it will be rejected.
+
+Use the JWT belonging to the crew member assigned to that specific assignment.
+
+---
+
+## "Tickets are not available for this event."
+
+The event must currently be scheduled or live.
+
+Check the event's status.
+
+---
+
+## "Idempotency-Key is required."
+
+The ticket purchase request must contain an Idempotency-Key HTTP header.
+
+The key belongs in the request header rather than the JSON:API attributes.
+
+---
+
+## Payment webhook returns 404.
+
+Verify that:
+
+-   The payment webhook route exists.
+-   The provider reference exists in PaymentTransaction.
+-   The webhook provider reference exactly matches the reference created during ticket reservation.
+-   The payment transaction belongs to an existing ticket.
+
+The webhook is designed to confirm an existing payment transaction.
+
+---
+
+## Payment remains pending.
+
+Check whether:
+
+-   The webhook was received.
+-   The provider reference matches.
+-   The provider event ID is valid.
+-   The payment transaction exists.
+-   The capture transaction completed successfully.
+-   The application logs contain an exception.
+
+---
+
+## Ticket remains pending.
+
+A ticket becomes active only after successful payment capture.
+
+Check the associated PaymentTransaction.
+
+---
+
+## No refund was created after a stream failure.
+
+Check:
+
+1. The event was live when the failure was reported.
+2. The incident was created.
+3. automatic_refunds_eligible is true.
+4. The queue worker is running.
+5. StreamFailureReported was handled.
+6. ProcessIncidentRefundsJob was processed.
+7. The incident contains active tickets eligible for refund.
+8. The Job did not fail and enter the failed-jobs table.
+
+---
+
+## Refund Job runs but creates duplicates.
+
+Check that refund processing identifies refunds using the ticket and stream incident relationship and that the corresponding database uniqueness constraints are in place.
+
+The refund Action must remain idempotent because the Job can be retried.
+
+---
+
+## "No payable balance exists."
+
+Check the event's ledger.
+
+The event should have ticket_sale entries if payments were successfully captured.
+
+Refund reserves reduce the payable amount.
+
+If total refund reserves equal or exceed ticket sales, there is no positive payout balance.
+
+A missing ticket_sale ledger entry usually indicates that the payment capture workflow did not complete successfully.
+
+---
+
+# 66. Useful Development Verification
+
+The application's current state can be inspected through Laravel Tinker.
+
+Useful records to inspect include:
+
+-   User
+-   LiveEvent
+-   CrewAssignment
+-   Ticket
+-   PaymentTransaction
+-   StreamIncident
+-   Refund
+-   LedgerEntry
+-   Payout
+
+For a successful payment flow, the expected relationship is:
+
+PaymentTransaction captured
+→ Ticket active
+→ Ledger ticket_sale
+
+For an early stream failure:
+
+StreamIncident automatically refundable
+→ Refund created
+→ Ticket revoked
+→ Ledger refund_reserve
+
+For a payout:
+
+Event completed
+→ Sales calculated
+→ Refund reserves deducted
+→ Payout created
+
+---
+
+# 67. Assessment Focus
+
+The implementation demonstrates the following assessment requirements.
+
+## State Management
+
+The event lifecycle is:
+
+scheduled
+→ live
+→ completed
+
+State transitions are protected by business rules and database transactions.
+
+## Payment Processing
+
+Payment transactions begin as pending and become captured only after payment confirmation.
+
+## Ticket Access
+
+Tickets begin as pending and become active only after successful payment capture.
+
+## Financial Integrity
+
+Successful payments create ticket sale ledger entries.
+
+Refunds create refund reserve ledger entries.
+
+Payouts are calculated from the financial ledger.
+
+## Stream Failure Handling
+
+Failures before 25% qualify for automatic full refunds.
+
+Failures at or after 25% require administrative review.
+
+## Asynchronous Processing
+
+Automatic refunds are processed through a queued Job.
+
+## Retry Handling
+
+The refund Job retries transient failures.
+
+## Idempotency
+
+The application protects:
+
+-   Ticket purchases
+-   Payment webhooks
+-   Refund processing
+-   Payout creation
+
+against duplicate operations.
+
+## Concurrency Protection
+
+Database transactions and row locking protect critical state transitions and financial operations.
+
+---
+
+# 68. Final Architecture Summary
+
+The overall application flow is:
+
+HTTP Request
+→ FormRequest
+→ Controller
+→ Service
+→ Action
+→ Database
+
+For event-driven side effects:
+
+Action
+→ Event
+→ Listener
+→ Job
+→ Action
+
+The refund workflow is specifically:
+
+ReportStreamFailureAction
+→ StreamFailureReported
+→ StreamFailureReportedListener
+→ ProcessIncidentRefundsJob
+→ IssueIncidentRefundsAction
+→ Refund + Ticket Revocation + Refund Ledger
+
+The important architectural distinction is:
+
+ReportStreamFailureAction records the incident and determines eligibility.
+
+StreamFailureReported communicates that the incident occurred.
+
+StreamFailureReportedListener reacts to the incident and dispatches asynchronous work.
+
+ProcessIncidentRefundsJob provides asynchronous execution and retry behavior.
+
+IssueIncidentRefundsAction performs the actual refund business operation.
+
+This separation keeps the HTTP request fast, keeps business logic inside Actions, and makes the financial operation safe to retry.
