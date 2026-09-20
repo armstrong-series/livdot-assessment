@@ -37,7 +37,7 @@ Recommended development environment:
 -   Postman or another HTTP client
 -   Docker (optional)
 
-The application uses Laravel queues for asynchronous processing such as incident refund processing.
+The application uses queues for asynchronous processing such as incident refund processing.
 
 ---
 
@@ -67,7 +67,7 @@ Create the environment file from the example environment file and configure the 
 cp .env.example .env
 ```
 
-Generate the Laravel application key.
+Generate the application key.
 
 ```bash
    php artisan key:generate
@@ -1167,7 +1167,7 @@ ProcessIncidentRefundsJob answers:
 
 When and how should that refund operation be executed asynchronously and retried?
 
-Keeping them separate makes the refund logic reusable and testable without coupling the business operation to Laravel's queue system.
+Keeping them separate makes the refund logic reusable and testable without coupling the business operation to queue system.
 
 It also makes retry behavior explicit.
 
@@ -1864,8 +1864,6 @@ A missing ticket_sale ledger entry usually indicates that the payment capture wo
 ---
 
 # 66. Useful Development Verification
-
-The application's current state can be inspected through Laravel Tinker.
 
 Useful records to inspect include:
 
