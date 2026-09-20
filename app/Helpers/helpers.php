@@ -5,6 +5,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Auth\Access\AuthorizationException;
+use App\Services\RoleService;
 
 
 if (! function_exists('livdotResponse')) {
@@ -114,19 +115,38 @@ if (! function_exists('livdotResponse')) {
 }
 
 
+// if (! function_exists('authorizedRole')) {
+//     function authorizedRole(string|array $roles, $user = null): void
+//     {
+//         $user = $user ?? auth()->user();
+
+//         abort_unless($user, 401, 'Unauthenticated.');
+
+//         if (in_array($user->role, (array) $roles, true)) {
+//             return;
+//         }
+
+//         throw new AuthorizationException(
+//             'Only ' . implode(', ', (array) $roles) . ' authorized action!'
+//         );
+//     }
+// }
+
+
+
 if (! function_exists('authorizedRole')) {
+
     function authorizedRole(string|array $roles, $user = null): void
     {
         $user = $user ?? auth()->user();
+        $roleService = app()->make(RoleService::class);
 
-        abort_unless($user, 401, 'Unauthenticated.');
-
-        if (in_array($user->role, (array) $roles, true)) {
-            return;
+        foreach ((array) $roles as $role) {
+            if ($roleService->userHasRole($user, $role)) {
+                return;
+            }
         }
 
-        throw new AuthorizationException(
-            'Only ' . implode(', ', (array) $roles) . ' authorized action!'
-        );
+        throw new AuthorizationException('Only ' . implode(', ', (array) $roles) . ' authorized action!');
     }
 }

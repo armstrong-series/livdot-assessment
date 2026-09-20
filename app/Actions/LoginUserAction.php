@@ -16,6 +16,10 @@ class LoginUserAction
             throw new AuthenticationException('The provided credentials are incorrect.');
         }
 
-        return $user;
+        return $user->refresh()->load(
+            [
+                'role'
+            ]
+        );
     }
 }
