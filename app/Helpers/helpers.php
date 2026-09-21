@@ -115,24 +115,6 @@ if (! function_exists('livdotResponse')) {
 }
 
 
-// if (! function_exists('authorizedRole')) {
-//     function authorizedRole(string|array $roles, $user = null): void
-//     {
-//         $user = $user ?? auth()->user();
-
-//         abort_unless($user, 401, 'Unauthenticated.');
-
-//         if (in_array($user->role, (array) $roles, true)) {
-//             return;
-//         }
-
-//         throw new AuthorizationException(
-//             'Only ' . implode(', ', (array) $roles) . ' authorized action!'
-//         );
-//     }
-// }
-
-
 
 if (! function_exists('authorizedRole')) {
 
